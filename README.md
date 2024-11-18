@@ -1,3 +1,6 @@
+[![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/liyajin7/ccc-process-audio/HEAD?labpath=notebooks%2Fdata-prep%2Fnov24-testing-v2.ipynb)
+
+
 # event-lifecycles
 Event lifecycles paper
 
