@@ -1,0 +1,53 @@
+#!/usr/bin/env python3
+
+import sys
+import json
+import logging
+import argparse
+
+import utils as ut
+
+fmt = '%(asctime)s : %(module)s : %(levelname)s : %(message)s'
+logging.basicConfig(format=fmt, level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+def json_validate(f, mode='rt', stop_on_error=False):
+    logger.info('Validating {0}'.format(f))
+
+    with ut.smart_open(f, 'rt') as fl:
+        for i, line in enumerate(fl):
+            try:
+                json.loads(line)
+            except json.JSONDecodeError:
+                logger.error('Bad JSON object at {0}:{1}'.format(f, str(i)))
+
+                if args.stop_on_error:
+                    raise
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='JSON validation')
+
+    parser.add_argument('-s', '--stop-on-error', action='store_true',
+                        help='stop processing on first error')
+    parser.add_argument('-m', '--mode', default='rt', help='file open mode')
+    parser.add_argument('files', nargs='*',
+                        help='files or directories containing JSON to validate')
+
+    args = parser.parse_args()
+
+    kwargs= {
+        'mode': args.mode,
+        'stop_on_error': args.stop_on_error
+    }
+
+    if len(args.files) == 0:
+        files = ['-']
+    else:
+        files = args.files
+
+    for f in files:
+        if f == '-':
+            json_validate(f, **kwargs)
+        else:
+            ut.walk_files(f, json_validate, kwargs=kwargs)
+

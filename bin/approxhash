@@ -1,0 +1,74 @@
+#!/usr/bin/env python3
+
+# Take in a CSV or JSONL file and write it out with an added approxhash column.
+
+import csv
+import json
+import argparse
+import contextlib
+
+import utils as ut
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Convert JSONL to CSV')
+
+    # Input options
+    parser.add_argument('infile', default='-', nargs='?',
+                        help='input file (default stdin)')
+
+    # Output options
+    parser.add_argument('outfile', default='-', nargs='?',
+                        help='output file (default stdout)')
+    parser.add_argument('-a', '--append', action='store_true',
+                        help='append to output file (default overwrite)')
+    parser.add_argument('-f', '--format', choices=['json', 'csv'],
+                        default='json', help='input file format')
+    parser.add_argument('-k', '--approxhash-key', default='approxhash',
+                        help='field name for approxhash')
+    parser.add_argument('-c', '--content-key', default='content',
+                        help='field name for input content')
+
+    parser.add_argument('-s', '--skipheader', action='store_true',
+                        help='skip writing header row (ignored with -f json)')
+    parser.add_argument('-l', '--delimiter', default=',',
+                        help='field delimiter (ignored with -f json)')
+    parser.add_argument('-t', '--terminator', default='\n',
+                        help='line terminator (ignored with -f json)')
+
+    args = parser.parse_args()
+
+    outmode = ('w+t' if args.append else 'wt')
+
+    with contextlib.ExitStack() as stack:
+        # NOTE smart_open implements logic to avoid closing stdin or stdout
+        inf = stack.enter_context(ut.smart_open(args.infile, 'rt'))
+        ouf = stack.enter_context(ut.smart_open(args.outfile, outmode))
+
+        if args.format == 'json':
+            for line in inf:
+                doc = json.loads(line)
+                hsh = ut.approxhash(doc[args.content_key])
+
+                doc[args.approxhash_key] = hsh
+                ouf.write(json.dumps(doc) + '\n')
+        else: # args.format == 'csv'
+            params = {
+                'delimiter'       : args.delimiter,
+                'lineterminator'  : args.terminator,
+            }
+
+            reader = csv.DictReader(inf, **params)
+
+            params['extrasaction'] = 'raise'
+            params['fieldnames'] = reader.fieldnames
+            writer = csv.DictWriter(ouf, **params)
+
+            if not args.skipheader:
+                writer.writeheader()
+
+            for doc in reader:
+                hsh = ut.approxhash(doc[args.content_key])
+
+                doc[args.approxhash_key] = hsh
+                writer.writerow(doc)
+

@@ -1,0 +1,13 @@
+pyyaml
+boto3
+docx
+flask
+flask_compress
+flask_cors
+gensim
+google-cloud
+google-auth-oauthlib
+python-magic==0.4.15
+python-dotenv==0.8.2
+pyscopg2
+requests==2.18.4

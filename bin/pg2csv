@@ -1,0 +1,86 @@
+#!/usr/bin/env python3
+
+# Even with its most CSV-like options, psql outputs data in an irritating way
+# that isn't quite CSV. This script dumps the results of sql queries against
+# a postgres db to csv with some configurable options.
+
+import sys
+import csv
+import argparse
+
+import psycopg2
+import psycopg2.extras
+
+import utils as ut
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Dump Postgres resultsets to csv')
+
+    # SQL sources
+    src = parser.add_mutually_exclusive_group()
+    src.add_argument('-c', '--command', help='sql text to run (default stdin)')
+    src.add_argument('-f', '--file', help='sql file to run (default stdin)')
+
+    # Database connection options
+    db = parser.add_mutually_exclusive_group()
+    db.add_argument('-s', '--socket', default='/var/run/postgresql/',
+                    help='directory containing Unix socket')
+    db.add_argument('-d', '--dsn',
+                    help='database DSN (default local Unix socket)')
+
+    # Fetch options
+    parser.add_argument('-o', '--output', default='-',
+                        help='output file (default stdout)')
+    parser.add_argument('-a', '--append', action='store_true',
+                        help='append to output file (default overwrite)')
+    parser.add_argument('-b', '--batchsize', default=4096,
+                        help='output batch size')
+    parser.add_argument('-n', '--curname', help='Server-side cursor name to use')
+
+    # Output formatting options
+    parser.add_argument('-l', '--delimiter', default=',', help='Delimiter character')
+
+    args = parser.parse_args()
+
+    if args.command is not None:
+        sql = args.command
+    elif args.file is not None:
+        with open(args.file, 'rt') as f:
+            sql = f.read()
+    else:
+        sql = sys.stdin.read()
+
+    if args.dsn is not None:
+        conn_args = {'dsn': args.dsn}
+    else:
+        conn_args = {'host': args.socket}
+
+    mode = ('w+t' if args.append else 'wt')
+
+    cur_args = {'cursor_factory': psycopg2.extras.DictCursor}
+    if args.curname is not None:
+        cur_args['name'] = args.curname
+    else:
+        cur_args['name'] = None
+
+    outparams = {
+        'delimiter': args.delimiter
+    }
+
+    with psycopg2.connect(**conn_args) as conn:
+        cur = conn.cursor(**cur_args)
+
+        cur.execute(sql)
+        colnames = [desc[0] for desc in cur.description]
+
+        with ut.smart_open(args.output, mode) as f:
+            writer = csv.writer(f, **outparams)
+            writer.writerow(colnames)
+
+            while True:
+                rows = cur.fetchmany(args.batchsize)
+                if not rows:
+                    break
+
+                writer.writerows(rows)
+

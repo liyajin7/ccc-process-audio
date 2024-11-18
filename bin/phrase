@@ -1,0 +1,213 @@
+#!/usr/bin/env python3
+
+import csv
+import json
+import logging
+import argparse
+import contextlib
+
+import gensim as gs
+import nltk.corpus as cps
+
+import utils as ut
+
+fmt = '%(asctime)s : %(module)s : %(levelname)s : %(message)s'
+logging.basicConfig(format=fmt, level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+class JsonReader(object):
+    def __init__(self, iterable):
+        self.iterable = iterable
+
+    def __iter__(self):
+        for line in self.iterable:
+            yield json.loads(line)
+
+def export(args):
+    """
+    Export the phrases detected by the passed model
+    """
+
+    if args.lowmem:
+        phraser = gs.models.phrases.Phraser.load(args.model_file)
+    else:
+        # instantiating Phraser extracts the detected bigrams
+        # into the ph.phrasegrams attribute
+        model = gs.models.phrases.Phrases.load(args.model_file)
+        phraser = gs.models.phrases.Phraser(model)
+
+    with open(args.phrases_file, 'wt') as out:
+        writer = csv.DictWriter(out, fieldnames=['phrase'])
+        writer.writeheader()
+
+        if not args.sorted:
+            keys = phraser.phrasegrams.keys()
+        else:
+            keys = sorted(phraser.phrasegrams, key=lambda x: x[1],
+                          reverse=True)
+
+        phrases = []
+        for key in keys:
+            val = []
+
+            for part in key:
+                try:
+                    val += [part.decode('utf-8')]
+                except AttributeError: # this is already str
+                    val += [part]
+
+            phrases += [args.delimiter.join(val)]
+        phrases = list(set(phrases))
+
+        writer.writerows([{'phrase': x} for x in phrases])
+
+def train(args):
+    """
+    Train a phrase detection model from input radio data
+    """
+
+    if args.update:
+        model = gs.models.phrases.Phrases.load(args.model)
+    else:
+        model = gs.models.Phrases(
+                    min_count=args.count,
+                    common_terms=cps.stopwords.words(args.common_terms),
+                    threshold=args.threshold,
+                    scoring=args.scoring
+        )
+
+    for fname in ut.files_under(*args.files):
+        with ut.smart_open(fname, 'rt') as f:
+            if args.format == 'line':
+                corpus = (line.strip().split() for line in f)
+            elif args.format == 'csv':
+                reader = csv.DictReader(f)
+                corpus = (
+                    line[args.content_key].strip().split()
+                    for line in f
+                )
+            else:
+                corpus = (
+                    json.loads(line)[args.content_key].strip().split()
+                    for line in f
+                )
+
+            model.add_vocab(corpus)
+
+    if args.lowmem:
+        model = gs.models.phrases.Phraser(model)
+
+    # overwrites - NOTE need to copy elewhere first to preserve old version
+    model.save(args.model)
+
+def combine(args):
+    """
+    Combine phrases in input text
+    """
+
+    phrases = []
+    for ph in args.phrases:
+        with ut.gzip_safe_open(ph, 'rt') as f:
+            next(f) # discard the header
+            phrases += [x.lower().strip().split(' ') for x in f] # list of lists
+    phrases = set([tuple(x) for x in phrases])
+
+    outmode = ('w+t' if args.append else 'wt')
+
+    with contextlib.ExitStack() as stack:
+        inf = stack.enter_context(ut.smart_open(args.infile, 'rt'))
+        ouf = stack.enter_context(ut.smart_open(args.outfile, outmode))
+
+        if args.format == 'line':
+            reader = inf
+        elif args.format == 'csv':
+            reader = csv.DictReader(inf)
+            writer = csv.DictWriter(ouf, fieldnames=reader.fieldnames)
+        else: # args.format == 'json'
+            reader = JsonReader(inf)
+
+        for line in reader:
+            if args.format == 'line':
+                ret = ut.phrase(line.strip(' ').split(), phrases,
+                                delim=args.delimiter, dedupe_phrases=False)
+                ouf.write(' '.join(ret) + '\n')
+            elif args.format == 'csv':
+                ret = line.copy()
+                for name in args.fieldnames:
+                    ret[name] = ut.phrase(ret[name].strip(' ').split(),
+                                          phrases, delim=args.delimiter,
+                                          dedupe_phrases=False)
+                    ret[name] = ' '.join(ret[name])
+                writer.writerow(ret)
+            else: # args.format == 'json'
+                ret = line.copy()
+                for name in args.fieldnames:
+                    ret[name] = ut.phrase(ret[name].strip(' ').split(),
+                                          phrases, delim=args.delimiter,
+                                          dedupe_phrases=False)
+                    ret[name] = ' '.join(ret[name])
+                ouf.write(json.dumps(ret) + '\n')
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Phrase detection/conversion')
+    sp = parser.add_subparsers()
+
+    tp = sp.add_parser('train', help='Train phrase model')
+    tp.add_argument('-c', '--count', type=int, default=5,
+                    help='minimum occurrences for inclusion (ignored with -u)')
+    tp.add_argument('-t', '--threshold', type=float, default=0.0,
+                    help='minimum score for inclusion (ignored with -u)')
+    tp.add_argument('-o', '--common-terms', default='english',
+                    help='NLTK stopword set for phrase detection')
+    tp.add_argument('-f', '--format', choices=['json', 'line', 'csv'],
+                    default='json', help='input file format')
+    tp.add_argument('-k', '--content-key', default='content',
+                    help='field name for content (ignored with format line)')
+    tp.add_argument('-m', '--model', default='phrases.model',
+                    help='output filename for model')
+    tp.add_argument('-u', '--update', action='store_true',
+                    help='update the preexisting model given to -m')
+    tp.add_argument('-g', '--scoring', choices=['npmi', 'original'],
+                    default='npmi', help='scoring function (ignored with -u')
+    tp.add_argument('-l', '--lowmem', action='store_true',
+                    help='reduced model size')
+    tp.add_argument('files', nargs='+',
+                    help='Files or dirs of source corpus for phrase detection')
+    tp.set_defaults(func=train)
+
+    ep = sp.add_parser('export', help='Export parser')
+    ep.add_argument('-l', '--lowmem', action='store_true',
+                    help='reduced model size')
+    ep.add_argument('-d', '--delimiter', default='_',
+                    help='Delimiter character for exported phrases')
+    ep.add_argument('-s', '--sorted', action='store_true',
+                    help='Export phrases sorted desc by score')
+    ep.add_argument('model_file', help='input filename for model')
+    ep.add_argument('phrases_file',
+                    help='output filename for detected phrases')
+    ep.set_defaults(func=export)
+
+    cp = sp.add_parser('combine', help='Combine phrases')
+    cp.add_argument('-d', '--delimiter', default='_',
+                    help='Delimiter character for exported phrases')
+    cp.add_argument('-p', '--phrases', action='append', default=[],
+                    help='files of phrases to combine')
+    cp.add_argument('-f', '--format', choices=['json', 'line', 'csv'],
+                    default='line', help='input file format')
+    cp.add_argument('-n', '--fieldnames', action='append', default=[],
+                    help='names of text fields for phrase combining (ignored if --format=line)')
+    cp.add_argument('-a', '--append', action='store_true',
+                    help='append to output file (default overwrite)')
+    cp.add_argument('infile', default='-', nargs='?',
+                    help='input file (default stdin)')
+    cp.add_argument('outfile', default='-', nargs='?',
+                    help='output file (default stdout)')
+    cp.set_defaults(func=combine)
+
+    args = parser.parse_args()
+
+    if hasattr(args, 'func'):
+        args.func(args)
+    else:
+        parser.print_help()
+
